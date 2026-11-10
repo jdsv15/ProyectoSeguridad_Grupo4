@@ -1,0 +1,13 @@
+# =====================================================================
+# Archivo de configuración de ejemplo - COOPEVIDA (IF0019)
+# Copie este archivo como 'config.properties' en la raíz del proyecto
+# y coloque su clave AES de 256 bits (32 bytes en Base64) y credenciales.
+# =====================================================================
+
+db.url=jdbc:mariadb://localhost:3306/coopevida
+db.user=coopevida_app
+db.password=CambieEstaClave#2026
+
+# Clave AES de 256 bits codificada en Base64 (32 bytes exactos al decodificar)
+# Puede generar una nueva con: openssl rand -base64 32
+aes.key=REEMPLAZAR_CON_CLAVE_AES_256_EN_BASE64_DE_32_BYTES

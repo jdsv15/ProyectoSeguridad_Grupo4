@@ -1,0 +1,15 @@
+# Archivos sensibles (R6 y R7: nunca subir la clave AES ni credenciales reales al repositorio)
+config.properties
+
+# Compilación de Maven / NetBeans
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Archivos temporales del IDE o del sistema
+.nb-gradle/
+nbproject/private/
+.DS_Store
+Thumbs.db
