@@ -1,13 +1,12 @@
-=====================================================================
 PROYECTO: Aplicación de escritorio segura en Java - Cooperativa COOPEVIDA
-CURSO: IF-0019 Seguridad en Sistemas Informáticos, Grupo 01 (II Semestre 2026)
-=====================================================================
+CURSO: IF-0019 Seguridad en Sistemas Informáticos, Grupo 04 (II Semestre 2026)
 
 1. INTEGRANTES DEL GRUPO
 ------------------------
-- Nombre completo 1 — Carné: BXXXXXXX
-- Nombre completo 2 — Carné: BXXXXXXX
-- Nombre completo 3 — Carné: BXXXXXXX
+- José Daniel Salas Vivas — Carné: C27097
+-  Luis Felipe Alfaro Vargas — Carné: C30250
+- Saul Esquivel Barrantes — Carné: C4E953
+- Xavier Mauricio Salas Jimenez — Carné: C37129
 
 2. VERSIONES UTILIZADAS
 -----------------------
