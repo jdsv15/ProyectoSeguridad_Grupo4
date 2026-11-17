@@ -10,34 +10,28 @@ import java.sql.Types;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
 import modelo.Asociado;
 import modelo.Cuenta;
 import modelo.Movimiento;
 import modelo.Usuario;
 import modelo.Usuario.Rol;
-import seguridad.Cripto;
+import seguridad.Configuracion;
 
 /**
- * Capa de acceso a datos (DAO) del sistema COOPEVIDA.
- * <ul>
- *   <li><b>R4 (Prevención de inyección SQL):</b> El 100 % de las consultas utiliza
- *       {@link PreparedStatement} con parámetros {@code ?}. No existe ninguna
- *       concatenación de entradas de usuario en sentencias SQL.</li>
- *   <li><b>R7 (Mínimo privilegio y credenciales externas):</b> Se conecta usando
- *       el usuario de aplicación ({@code coopevida_app}) leyendo las credenciales
- *       desde variables de entorno o desde {@code config.properties}.</li>
- *   <li><b>Separación de responsabilidades:</b> Esta clase nunca cifra ni descifra
- *       montos o saldos; únicamente transfiere los arreglos {@code byte[]} cifrados
- *       hacia y desde las columnas {@code VARBINARY(64)}.</li>
- * </ul>
+ * Capa de acceso a datos: aquí está todo el SQL de la aplicación.
+ *
+ * R4: todas las consultas usan PreparedStatement con signos "?". Lo que escribe el
+ *     usuario se envía aparte como dato con setString/setInt, nunca pegado al texto
+ *     del SQL. Por eso una entrada como  ' OR '1'='1  se busca tal cual y no cambia
+ *     la consulta (no hay inyección SQL).
+ * R7: se conecta con el usuario coopevida_app (no root), que solo tiene los permisos
+ *     que necesita. Sus credenciales se leen de fuera del código (clase Configuracion).
+ * Esta clase no decide permisos ni descifra nada: saldos y montos entran y salen cifrados.
  */
 public class CoopevidaDAO {
 
-    /**
-     * Contenedor interno para devolver a la capa de servicios el usuario junto con
-     * su hash PBKDF2 únicamente durante la verificación de credenciales.
-     */
+    // Devuelve el usuario junto con su hash, solo para revisar la contraseña al iniciar sesión.
+    // El hash no se guarda en el objeto Usuario de la sesión.
     public static class RegistroAutenticacion {
         private final Usuario usuario;
         private final String hashContrasena;
@@ -56,16 +50,12 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Obtiene una conexión JDBC hacia MariaDB utilizando las credenciales externas
-     * configuradas en variables de entorno o en {@code config.properties} (R7).
-     */
+    // R7: abre la conexión a MariaDB con el usuario de la aplicación.
+    // Las credenciales se leen de fuera del código (variable de entorno o config.properties).
     public Connection obtenerConexion() throws SQLException {
-        Properties props = Cripto.cargarPropiedadesExternas();
-
-        String url = obtenerValorConfig("COOPEVIDA_DB_URL", props, "db.url");
-        String user = obtenerValorConfig("COOPEVIDA_DB_USER", props, "db.user");
-        String pass = obtenerValorConfig("COOPEVIDA_DB_PASS", props, "db.password");
+        String url = Configuracion.obtener("COOPEVIDA_DB_URL", "db.url");
+        String user = Configuracion.obtener("COOPEVIDA_DB_USER", "db.user");
+        String pass = Configuracion.obtener("COOPEVIDA_DB_PASS", "db.password");
 
         if (url == null || user == null || pass == null) {
             throw new SQLException("Credenciales de base de datos no configuradas en config.properties ni en variables de entorno.");
@@ -73,17 +63,7 @@ public class CoopevidaDAO {
         return DriverManager.getConnection(url.trim(), user.trim(), pass);
     }
 
-    private String obtenerValorConfig(String envName, Properties props, String propName) {
-        String val = System.getenv(envName);
-        if (val == null || val.isBlank()) {
-            val = props.getProperty(propName);
-        }
-        return (val != null && !val.isBlank()) ? val : null;
-    }
-
-    /**
-     * Busca un usuario por su {@code nombre_usuario} mediante consulta parametrizada (R4).
-     */
+    // R4: el nombre escrito en el login se envía como parámetro, nunca dentro del SQL
     public RegistroAutenticacion buscarUsuarioPorNombre(String nombreUsuario) throws SQLException {
         String sql = "SELECT id, nombre_usuario, hash_contrasena, rol_id, asociado_id "
                    + "FROM usuario WHERE nombre_usuario = ?";
@@ -107,9 +87,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Obtiene el hash de contraseña actual de un usuario por su identificador.
-     */
+    // Hash actual de la contraseña de un usuario (para el cambio de contraseña)
     public String obtenerHashPorId(int usuarioId) throws SQLException {
         String sql = "SELECT hash_contrasena FROM usuario WHERE id = ?";
         try (Connection conn = obtenerConexion();
@@ -124,9 +102,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Actualiza el hash PBKDF2 de la contraseña de un usuario (cambiar contraseña).
-     */
+    // Guarda el nuevo hash de la contraseña de un usuario
     public void actualizarHashContrasena(int usuarioId, String nuevoHash) throws SQLException {
         String sql = "UPDATE usuario SET hash_contrasena = ? WHERE id = ?";
         try (Connection conn = obtenerConexion();
@@ -137,9 +113,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Lista todos los usuarios registrados con su rol y la cédula del asociado vinculado (si aplica).
-     */
+    // Todos los usuarios con su rol y la cédula del asociado vinculado (si tiene)
     public List<Usuario> listarUsuarios() throws SQLException {
         String sql = "SELECT u.id, u.nombre_usuario, u.rol_id, u.asociado_id, a.cedula "
                    + "FROM usuario u "
@@ -162,9 +136,7 @@ public class CoopevidaDAO {
         return lista;
     }
 
-    /**
-     * Verifica si ya existe un usuario con el nombre indicado.
-     */
+    // Indica si ya existe un usuario con ese nombre
     public boolean existeNombreUsuario(String nombreUsuario) throws SQLException {
         String sql = "SELECT 1 FROM usuario WHERE nombre_usuario = ?";
         try (Connection conn = obtenerConexion();
@@ -176,10 +148,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Lista únicamente cédula y nombre completo de los asociados que aún no tienen
-     * usuario vinculado (operación ASOCIADO_VINCULAR).
-     */
+    // Asociados que aún no tienen usuario. Solo se leen cédula y nombre (ASOCIADO_VINCULAR).
     public List<Asociado> listarAsociadosSinUsuario() throws SQLException {
         String sql = "SELECT a.id, a.cedula, a.nombre, a.apellidos "
                    + "FROM asociado a "
@@ -200,9 +169,7 @@ public class CoopevidaDAO {
         return lista;
     }
 
-    /**
-     * Comprueba que el asociado exista y aún no tenga usuario vinculado.
-     */
+    // Indica si el asociado existe y todavía no tiene usuario
     public boolean asociadoDisponibleParaVincular(int asociadoId) throws SQLException {
         String sql = "SELECT 1 FROM asociado a "
                    + "LEFT JOIN usuario u ON u.asociado_id = a.id "
@@ -216,9 +183,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Inserta un nuevo usuario en la base de datos con su hash PBKDF2.
-     */
+    // Guarda un usuario nuevo con el hash de su contraseña (nunca la contraseña)
     public void insertarUsuario(String nombreUsuario, String hashContrasena, int rolId, Integer asociadoId) throws SQLException {
         String sql = "INSERT INTO usuario (nombre_usuario, hash_contrasena, rol_id, asociado_id) "
                    + "VALUES (?, ?, ?, ?)";
@@ -236,10 +201,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Busca una cuenta por el número de cédula del asociado (9 dígitos).
-     * Devuelve la cuenta con su {@code saldoCifrado} sin descifrar.
-     */
+    // R4: busca la cuenta por cédula (la cédula va como parámetro). El saldo sale cifrado.
     public Cuenta buscarCuentaPorCedula(String cedula) throws SQLException {
         String sql = "SELECT c.id, c.asociado_id, a.cedula, a.nombre, a.apellidos, c.saldo "
                    + "FROM cuenta c "
@@ -262,10 +224,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Busca una cuenta por el identificador interno del asociado.
-     * Devuelve la cuenta con su {@code saldoCifrado} sin descifrar.
-     */
+    // Busca la cuenta del asociado de la sesión ("Mi cuenta"). El saldo sale cifrado.
     public Cuenta buscarCuentaPorAsociadoId(int asociadoId) throws SQLException {
         String sql = "SELECT c.id, c.asociado_id, a.cedula, a.nombre, a.apellidos, c.saldo "
                    + "FROM cuenta c "
@@ -288,10 +247,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Obtiene la lista de movimientos de una cuenta ordenados del más reciente al más antiguo.
-     * Los montos se devuelven cifrados ({@code byte[]}) para que la capa de servicios los descifre.
-     */
+    // Movimientos de una cuenta, del más reciente al más antiguo. Los montos salen cifrados.
     public List<Movimiento> listarMovimientosPorCuenta(int cuentaId) throws SQLException {
         String sql = "SELECT id, cuenta_id, tipo, monto, referencia, fecha_hora, usuario_id "
                    + "FROM movimiento "
@@ -319,8 +275,11 @@ public class CoopevidaDAO {
     }
 
     /**
-     * Registra un movimiento y actualiza el saldo de la cuenta en una única
-     * transacción atómica. Si ocurre cualquier fallo, se revierte toda la operación.
+     * Guarda el movimiento y el nuevo saldo en una transacción: o se guardan los dos o
+     * ninguno (si algo falla, rollback deshace todo).
+     * El UPDATE solo cambia el saldo si en la base sigue el mismo saldo cifrado que se leyó
+     * antes. Si otro movimiento lo cambió en el medio, no se actualiza nada, se deshace
+     * todo y se pide intentar de nuevo. Aquí solo se comparan bytes cifrados.
      */
     public void registrarMovimientoYActualizarSaldo(
             int cuentaId,
@@ -328,11 +287,12 @@ public class CoopevidaDAO {
             byte[] montoCifrado,
             String referencia,
             int usuarioId,
-            byte[] nuevoSaldoCifrado) throws SQLException {
+            byte[] nuevoSaldoCifrado,
+            byte[] saldoCifradoLeido) throws SQLException {
 
         String sqlInsertMov = "INSERT INTO movimiento (cuenta_id, tipo, monto, referencia, usuario_id) "
                             + "VALUES (?, ?, ?, ?, ?)";
-        String sqlUpdateCuenta = "UPDATE cuenta SET saldo = ? WHERE id = ?";
+        String sqlUpdateCuenta = "UPDATE cuenta SET saldo = ? WHERE id = ? AND saldo = ?";
 
         try (Connection conn = obtenerConexion()) {
             conn.setAutoCommit(false);
@@ -348,9 +308,12 @@ public class CoopevidaDAO {
 
                 psCuenta.setBytes(1, nuevoSaldoCifrado);
                 psCuenta.setInt(2, cuentaId);
+                psCuenta.setBytes(3, saldoCifradoLeido);
                 int filas = psCuenta.executeUpdate();
                 if (filas != 1) {
-                    throw new SQLException("No fue posible actualizar el saldo de la cuenta.");
+                    // El saldo cambió desde que se leyó: se deshace también el movimiento insertado
+                    conn.rollback();
+                    throw new IllegalArgumentException("El saldo de la cuenta cambió, intente de nuevo.");
                 }
 
                 conn.commit();
@@ -363,10 +326,8 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Inserta un registro en la bitácora de auditoría de solo inserción (R8).
-     * El usuario de base de datos de la aplicación solo posee privilegio INSERT sobre {@code bitacora}.
-     */
+    // R8: agrega un registro a la bitácora. En la base de datos, coopevida_app solo tiene
+    // permiso INSERT en esta tabla: no puede leerla, modificarla ni borrarla.
     public void insertarBitacora(String usuarioNombre, String evento, String detalle, String resultado) throws SQLException {
         String sql = "INSERT INTO bitacora (usuario_nombre, evento, detalle, resultado) "
                    + "VALUES (?, ?, ?, ?)";
@@ -380,10 +341,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Cuenta la cantidad de usuarios registrados (utilizado por {@code CargaInicial}
-     * para verificar si los datos de prueba ya fueron insertados).
-     */
+    // Cantidad de usuarios. CargaInicial la usa para no cargar los datos de prueba dos veces.
     public int contarUsuarios() throws SQLException {
         String sql = "SELECT COUNT(*) FROM usuario";
         try (Connection conn = obtenerConexion();
@@ -396,9 +354,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Inserta un usuario con identificador explícito durante la carga inicial.
-     */
+    // Carga inicial: inserta un usuario de prueba con su id
     public void insertarUsuarioCargaInicial(Connection conn, int id, String nombreUsuario,
                                             String hashContrasena, int rolId, Integer asociadoId) throws SQLException {
         String sql = "INSERT INTO usuario (id, nombre_usuario, hash_contrasena, rol_id, asociado_id) "
@@ -417,9 +373,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Inserta una cuenta con identificador explícito y saldo cifrado durante la carga inicial.
-     */
+    // Carga inicial: inserta una cuenta con su saldo ya cifrado
     public void insertarCuentaCargaInicial(Connection conn, int id, int asociadoId, byte[] saldoCifrado) throws SQLException {
         String sql = "INSERT INTO cuenta (id, asociado_id, saldo) VALUES (?, ?, ?)";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -430,9 +384,7 @@ public class CoopevidaDAO {
         }
     }
 
-    /**
-     * Inserta un movimiento con identificador, monto cifrado y fecha explícita durante la carga inicial.
-     */
+    // Carga inicial: inserta un movimiento con su monto ya cifrado y su fecha
     public void insertarMovimientoCargaInicial(Connection conn, long id, int cuentaId, String tipo,
                                                byte[] montoCifrado, String referencia,
                                                String fechaHora, int usuarioId) throws SQLException {

@@ -5,6 +5,8 @@ config.properties
 target/
 *.class
 *.jar
+# Excepción: el driver JDBC incluido en el proyecto sí se versiona (lo pide el enunciado)
+!lib/**/*.jar
 *.war
 *.ear
 

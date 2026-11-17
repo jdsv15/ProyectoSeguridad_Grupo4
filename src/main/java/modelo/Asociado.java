@@ -1,8 +1,8 @@
 package modelo;
 
 /**
- * Representa los datos básicos de un asociado sin usuario asignado,
- * utilizados únicamente en la operación ASOCIADO_VINCULAR (solo cédula y nombre).
+ * Asociado que todavía no tiene usuario. Solo lleva cédula y nombre, porque es lo
+ * único que el Administrador puede ver para vincularlo (ASOCIADO_VINCULAR).
  */
 public class Asociado {
 

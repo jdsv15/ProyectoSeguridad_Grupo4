@@ -7,7 +7,6 @@ import java.security.SecureRandom;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.List;
-import java.util.regex.Pattern;
 import modelo.Asociado;
 import modelo.Cuenta;
 import modelo.Movimiento;
@@ -19,38 +18,43 @@ import seguridad.ControlAcceso.Permiso;
 import seguridad.Cripto;
 
 /**
- * Capa de servicios del sistema COOPEVIDA.
- * <p>
- * Centraliza todos los controles de seguridad de la aplicación en el orden exigido:
- * <ol>
- *   <li>Verificación del permiso del rol y pertenencia de los datos (R3).</li>
- *   <li>Validación de entradas por lista blanca (R5).</li>
- *   <li>Aplicación de reglas del negocio (retiro no mayor al saldo, unicidad, etc.).</li>
- *   <li>Cifrado y descifrado de datos sensibles con AES-GCM (R6).</li>
- *   <li>Ejecución transaccional de modificaciones por medio del DAO.</li>
- *   <li>Registro de auditoría en la bitácora de solo inserción (R8).</li>
- *   <li>Conversión de fallos técnicos en el mensaje genérico M02 con código de referencia (R9).</li>
- * </ol>
+ * Capa de servicios: aquí están todas las operaciones de la aplicación y sus controles
+ * de seguridad. La interfaz nunca habla con la base de datos; siempre pasa por aquí.
+ *
+ * Cada operación sigue el orden del enunciado:
+ *   1. Revisar el permiso del rol y que los datos sean del usuario (R3).
+ *   2. Validar las entradas por lista blanca (R5).
+ *   3. Aplicar las reglas del negocio (por ejemplo, un retiro no puede superar el saldo).
+ *   4. Cifrar o descifrar saldos y montos (R6).
+ *   5. Guardar los cambios en una transacción (todo o nada).
+ *   6. Registrar el evento en la bitácora (R8).
+ *   7. Si algo falla por un error técnico, mostrar solo el mensaje M02 (R9).
  */
 public class CoopevidaServicio {
 
-    // Mensajes de seguridad fijos exigidos por el enunciado
+    // Mensajes fijos del enunciado. M01 es igual exista o no el usuario (R2),
+    // así un atacante no puede saber qué nombres de usuario son válidos.
     public static final String MENSAJE_M01 = "Usuario o contraseña incorrectos.";
     private static final String PLANTILLA_M02 =
             "No fue posible completar la operación. Intente de nuevo; si el problema continúa, "
             + "comuníquese con el administrador. (Ref. %s)";
 
-    // Parámetros de política de bloqueo de inicio de sesión (R2)
+    // R2: después de 5 intentos fallidos seguidos, el inicio de sesión se bloquea 15 segundos.
+    // Esto frena a quien intenta adivinar contraseñas probando muchas (fuerza bruta).
     public static final int MAX_INTENTOS_FALLIDOS = 5;
     public static final long DURACION_BLOQUEO_MS = 15_000L; // 15 segundos
 
-    // Expresiones regulares de validación por lista blanca (R5)
-    private static final Pattern PATRON_USUARIO = Pattern.compile("^[a-z0-9._]{4,20}$");
-    private static final Pattern PATRON_CEDULA = Pattern.compile("^[0-9]{9}$");
-    private static final Pattern PATRON_MONTO = Pattern.compile("^[0-9]+(\\.[0-9]{1,2})?$");
-    private static final Pattern PATRON_REFERENCIA = Pattern.compile("^[A-Za-z0-9-]{1,20}$");
+    // Las reglas de cada campo (R5) están en la clase Validaciones.
 
-    // Eventos oficiales de la bitácora (R8)
+    // Largo máximo del saldo en texto para que, ya cifrado, quepa en la columna (64 bytes):
+    // 12 del IV + 36 del saldo + 16 de la etiqueta = 64.
+    private static final int LONGITUD_MAXIMA_SALDO = 36;
+
+    // Tamaño de las columnas de la bitácora en la base de datos
+    private static final int LONGITUD_MAXIMA_USUARIO_BITACORA = 50;
+    private static final int LONGITUD_MAXIMA_DETALLE_BITACORA = 255;
+
+    // R8: nombres de los eventos de la bitácora, tal como los pide el enunciado
     public static final String EVENTO_LOGIN_EXITOSO = "LOGIN_EXITOSO";
     public static final String EVENTO_LOGIN_FALLIDO = "LOGIN_FALLIDO";
     public static final String EVENTO_BLOQUEO_INICIO = "BLOQUEO_INICIO";
@@ -64,11 +68,13 @@ public class CoopevidaServicio {
     public static final String RESULTADO_FALLIDO = "Fallido";
     public static final String RESULTADO_DENEGADO = "Denegado";
 
+    // Para generar los códigos de referencia del mensaje M02
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final CoopevidaDAO dao;
 
-    // Estado en memoria para intentos fallidos consecutivos de inicio de sesión (R2)
+    // R2: el contador de intentos fallidos vive solo en memoria (no en la base de datos)
+    // y no depende del usuario escrito, como pide el enunciado.
     private int intentosFallidosConsecutivos = 0;
     private long bloqueadoHastaEpochMs = 0L;
 
@@ -80,16 +86,12 @@ public class CoopevidaServicio {
         this.dao = dao;
     }
 
-    /**
-     * Indica si el inicio de sesión se encuentra temporalmente bloqueado (15 s).
-     */
+    // Indica si el inicio de sesión está bloqueado en este momento (R2)
     public synchronized boolean estaInicioBloqueado() {
         return System.currentTimeMillis() < bloqueadoHastaEpochMs;
     }
 
-    /**
-     * Devuelve los segundos restantes del bloqueo de inicio de sesión, o 0 si no está bloqueado.
-     */
+    // Segundos que faltan para que termine el bloqueo (0 si no hay bloqueo)
     public synchronized int obtenerSegundosRestantesBloqueo() {
         long restanteMs = bloqueadoHastaEpochMs - System.currentTimeMillis();
         if (restanteMs <= 0) {
@@ -98,24 +100,19 @@ public class CoopevidaServicio {
         return (int) Math.ceil(restanteMs / 1000.0);
     }
 
-    /**
-     * Devuelve la cantidad actual de intentos fallidos consecutivos en memoria.
-     */
+    // Cantidad de intentos fallidos seguidos hasta ahora
     public synchronized int getIntentosFallidosConsecutivos() {
         return intentosFallidosConsecutivos;
     }
 
     /**
-     * Operación de inicio de sesión (R1, R2, R8, R9).
-     * <ol>
-     *   <li>Si usuario o contraseña están vacíos, lo indica y no consulta la BD.</li>
-     *   <li>Busca el usuario con consulta parametrizada y verifica con PBKDF2.</li>
-     *   <li>Si no existe, verifica contra un hash ficticio para evitar enumeración por tiempo.</li>
-     *   <li>Si falla, incrementa contador en memoria, registra {@code LOGIN_FALLIDO} y, al llegar
-     *       a 5 intentos consecutivos, bloquea por 15 segundos, registra {@code BLOQUEO_INICIO}
-     *       y reinicia el contador a 0.</li>
-     *   <li>Si tiene éxito, reinicia el contador a 0, registra {@code LOGIN_EXITOSO} y devuelve el {@link Usuario}.</li>
-     * </ol>
+     * Inicio de sesión (R1, R2, R8 y R9). Pasos:
+     *   1. Si el usuario o la contraseña están vacíos, se avisa sin consultar la base de datos.
+     *   2. Se busca el usuario y se compara la contraseña con su hash PBKDF2.
+     *   3. Si falla, se muestra M01, se suma un intento y se registra LOGIN_FALLIDO.
+     *      Al quinto intento se bloquea 15 segundos y se registra BLOQUEO_INICIO.
+     *   4. Si es correcta, el contador vuelve a 0 y se registra LOGIN_EXITOSO.
+     * Al final, la contraseña se borra de memoria (se llena el arreglo con ceros).
      */
     public synchronized Usuario iniciarSesion(String nombreUsuario, char[] contrasena) {
         try {
@@ -138,7 +135,8 @@ public class CoopevidaServicio {
                 RegistroAutenticacion reg = dao.buscarUsuarioPorNombre(usuarioLimpio);
                 boolean autenticado;
                 if (reg == null) {
-                    // Usuario inexistente: ejecutar PBKDF2 contra hash ficticio (mitigación de timing attack)
+                    // Usuario inexistente: se calcula PBKDF2 igual, para que el tiempo de respuesta
+                    // no revele si el usuario existe
                     Cripto.verificarContrasenaFicticia(contrasena);
                     autenticado = false;
                 } else {
@@ -167,7 +165,11 @@ public class CoopevidaServicio {
                         EVENTO_LOGIN_EXITOSO, "Rol: " + usuarioAutenticado.getRol().getNombre(), RESULTADO_EXITO);
                 return usuarioAutenticado;
 
-            } catch (SQLException e) {
+            } catch (IllegalArgumentException e) {
+                // M01 o mensaje de campo vacío: se muestran tal cual
+                throw e;
+            } catch (SQLException | RuntimeException e) {
+                // R9: cualquier otro error es técnico y el usuario solo ve M02
                 throw manejarErrorTecnico(usuarioLimpio, e);
             }
         } finally {
@@ -178,9 +180,9 @@ public class CoopevidaServicio {
     }
 
     /**
-     * Sesión → Cambiar mi contraseña (todos los roles, permiso {@code SESION_CAMBIAR_CLAVE}).
-     * Verifica la contraseña actual, exige entre 12 y 128 caracteres para la nueva,
-     * comprueba la confirmación y guarda un nuevo hash PBKDF2 con sal nueva.
+     * Sesión → Cambiar mi contraseña (todos los roles, permiso SESION_CAMBIAR_CLAVE).
+     * Pide la contraseña actual para confirmar que es la misma persona, valida la nueva
+     * (12 a 128 caracteres) y guarda un hash PBKDF2 nuevo, con sal nueva (R1 y R2).
      */
     public void cambiarContrasena(Usuario sesion, char[] contrasenaActual,
                                   char[] contrasenaNueva, char[] confirmarContrasenaNueva) {
@@ -189,23 +191,9 @@ public class CoopevidaServicio {
             verificarPermisoConBitacora(sesion, Permiso.SESION_CAMBIAR_CLAVE, "Cambiar contraseña");
 
             // 2. Validar entradas por lista blanca (R5)
-            if (contrasenaActual == null || contrasenaActual.length == 0) {
-                throw new IllegalArgumentException("El campo 'Contraseña actual' es obligatorio.");
-            }
-            if (contrasenaNueva == null || contrasenaNueva.length == 0) {
-                throw new IllegalArgumentException("El campo 'Contraseña nueva' es obligatorio.");
-            }
-            if (contrasenaNueva.length < 12 || contrasenaNueva.length > 128) {
-                throw new IllegalArgumentException("El campo 'Contraseña nueva' debe tener entre 12 y 128 caracteres.");
-            }
-            if (confirmarContrasenaNueva == null || confirmarContrasenaNueva.length == 0) {
-                throw new IllegalArgumentException("El campo 'Confirmar contraseña nueva' es obligatorio.");
-            }
-            if (!Arrays.equals(contrasenaNueva, confirmarContrasenaNueva)) {
-                throw new IllegalArgumentException("El campo 'Confirmar contraseña nueva' no coincide con la contraseña nueva.");
-            }
+            Validaciones.validarCambioContrasena(contrasenaActual, contrasenaNueva, confirmarContrasenaNueva);
 
-            // 3. Verificar que la contraseña actual coincida con la almacenada y guardar nuevo hash
+            // 3. Revisar la contraseña actual contra su hash y guardar el hash de la nueva
             try {
                 String hashActual = dao.obtenerHashPorId(sesion.getId());
                 if (hashActual == null || !Cripto.verificarContrasena(contrasenaActual, hashActual)) {
@@ -214,8 +202,11 @@ public class CoopevidaServicio {
 
                 String nuevoHash = Cripto.hashContrasena(contrasenaNueva);
                 dao.actualizarHashContrasena(sesion.getId(), nuevoHash);
-            } catch (SQLException e) {
-                throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
+            } catch (IllegalArgumentException | AccesoDenegadoException e) {
+                throw e;
+            } catch (SQLException | RuntimeException e) {
+                // R9: cualquier otro error es técnico y el usuario solo ve M02
+                throw manejarErrorTecnico(nombreDeSesion(sesion), e);
             }
         } finally {
             if (contrasenaActual != null) {
@@ -231,19 +222,19 @@ public class CoopevidaServicio {
     }
 
     /**
-     * Obtiene el resumen de una cuenta (nombre del asociado y saldo actual descifrado)
-     * para que el Ejecutivo verifique los datos antes de registrar un movimiento.
+     * Registrar movimiento, primer paso: el Ejecutivo escribe la cédula y ve el nombre
+     * y el saldo actual del asociado antes de registrar el depósito o retiro.
      */
     public Cuenta obtenerResumenCuentaParaMovimiento(Usuario sesion, String cedula) {
-        // 1. Verificar permiso MOVIMIENTO_REGISTRAR (R3)
-        verificarPermisoConBitacora(sesion, Permiso.MOVIMIENTO_REGISTRAR,
-                "Resumen cuenta para movimiento: cedula=" + valorSeguro(cedula));
-
-        // 2. Validar cédula por lista blanca (R5)
-        String cedulaLimpia = validarCedula(cedula);
-
-        // 3. Consultar cuenta y descifrar saldo (R6)
         try {
+            // 1. Verificar permiso MOVIMIENTO_REGISTRAR (R3)
+            verificarPermisoConBitacora(sesion, Permiso.MOVIMIENTO_REGISTRAR,
+                    "Resumen cuenta para movimiento: cedula=" + valorSeguro(cedula));
+
+            // 2. Validar cédula por lista blanca (R5)
+            String cedulaLimpia = Validaciones.validarCedula(cedula);
+
+            // 3. Consultar cuenta y descifrar saldo (R6)
             Cuenta cuenta = dao.buscarCuentaPorCedula(cedulaLimpia);
             if (cuenta == null) {
                 throw new IllegalArgumentException("No existe ningún asociado con la cédula indicada.");
@@ -251,35 +242,34 @@ public class CoopevidaServicio {
             BigDecimal saldoActual = Cripto.descifrar(cuenta.getSaldoCifrado());
             cuenta.setSaldo(saldoActual);
             return cuenta;
-        } catch (SQLException | IllegalStateException e) {
-            throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
+        } catch (IllegalArgumentException | AccesoDenegadoException e) {
+            throw e;
+        } catch (SQLException | RuntimeException e) {
+            // R9: cualquier otro error es técnico y el usuario solo ve M02
+            throw manejarErrorTecnico(nombreDeSesion(sesion), e);
         }
     }
 
     /**
-     * Cuentas → Registrar movimiento (Ejecutivo, permiso {@code MOVIMIENTO_REGISTRAR}).
-     * <p>
-     * Valida los campos por lista blanca, verifica que un retiro no supere el saldo actual,
-     * cifra el monto y el nuevo saldo con AES-GCM, ejecuta la inserción y actualización
-     * en una sola transacción y registra {@code MOVIMIENTO_REGISTRADO} en la bitácora
-     * (sin incluir monto ni saldo).
-     *
-     * @return El nuevo saldo de la cuenta después de aplicar el movimiento.
+     * Cuentas → Registrar movimiento (Ejecutivo, permiso MOVIMIENTO_REGISTRAR).
+     * Valida los datos, revisa que un retiro no supere el saldo, cifra el monto y el
+     * nuevo saldo, y guarda ambos en una sola transacción. En la bitácora queda
+     * MOVIMIENTO_REGISTRADO sin el monto ni el saldo. Devuelve el nuevo saldo.
      */
     public BigDecimal registrarMovimiento(Usuario sesion, String cedula, String tipo,
                                           String montoTexto, String referencia) {
-        // 1. Verificar permiso del rol (R3)
-        verificarPermisoConBitacora(sesion, Permiso.MOVIMIENTO_REGISTRAR,
-                "Registrar movimiento: cedula=" + valorSeguro(cedula));
-
-        // 2. Validar entradas por lista blanca (R5)
-        String cedulaLimpia = validarCedula(cedula);
-        String tipoNormalizado = validarTipoMovimiento(tipo);
-        BigDecimal monto = validarMonto(montoTexto);
-        String referenciaLimpia = validarReferencia(referencia);
-
-        // 3. Aplicar reglas del negocio, cifrar con AES-GCM (R6), ejecutar transacción y registrar en bitácora (R8)
         try {
+            // 1. Verificar permiso del rol (R3)
+            verificarPermisoConBitacora(sesion, Permiso.MOVIMIENTO_REGISTRAR,
+                    "Registrar movimiento: cedula=" + valorSeguro(cedula));
+
+            // 2. Validar entradas por lista blanca (R5)
+            String cedulaLimpia = Validaciones.validarCedula(cedula);
+            String tipoNormalizado = Validaciones.validarTipoMovimiento(tipo);
+            BigDecimal monto = Validaciones.validarMonto(montoTexto);
+            String referenciaLimpia = Validaciones.validarReferencia(referencia);
+
+            // 3. Regla del negocio: un retiro no puede superar el saldo actual
             Cuenta cuenta = dao.buscarCuentaPorCedula(cedulaLimpia);
             if (cuenta == null) {
                 throw new IllegalArgumentException("No existe ningún asociado con la cédula indicada.");
@@ -299,21 +289,32 @@ public class CoopevidaServicio {
                 nuevoSaldo = saldoActual.add(monto);
             }
 
-            // Cifrar monto y nuevo saldo con AES-GCM (cada uno con IV aleatorio único de 12 bytes)
+            // R5 (rango): si el nuevo saldo es tan grande que cifrado no cabe en la base de datos,
+            // se avisa al usuario y no se guarda nada.
+            if (nuevoSaldo.toPlainString().length() > LONGITUD_MAXIMA_SALDO) {
+                throw new IllegalArgumentException(
+                        "El campo 'Monto' haría que el saldo de la cuenta supere el máximo permitido.");
+            }
+
+            // 4. R6: el monto y el nuevo saldo se guardan cifrados
             byte[] montoCifrado = Cripto.cifrar(monto);
             byte[] nuevoSaldoCifrado = Cripto.cifrar(nuevoSaldo);
 
-            // Ejecutar en una sola transacción atómica
+            // 5. Se guarda el movimiento y el nuevo saldo juntos: o se guardan los dos o ninguno.
+            // También se envía el saldo cifrado que se leyó al inicio: si otro ejecutivo cambió
+            // el saldo mientras tanto, no se guarda nada. Así dos retiros al mismo tiempo no
+            // pueden dejar la cuenta en negativo.
             dao.registrarMovimientoYActualizarSaldo(
                     cuenta.getId(),
                     tipoNormalizado,
                     montoCifrado,
                     referenciaLimpia,
                     sesion.getId(),
-                    nuevoSaldoCifrado
+                    nuevoSaldoCifrado,
+                    cuenta.getSaldoCifrado()
             );
 
-            // Registrar en bitácora SIN monto ni saldo (R8)
+            // 6. R8: bitácora con cédula, tipo y referencia, NUNCA con monto ni saldo
             String detalleBitacora = "cedula=" + cedulaLimpia
                     + ", tipo=" + tipoNormalizado
                     + ", referencia=" + referenciaLimpia;
@@ -321,68 +322,68 @@ public class CoopevidaServicio {
                     EVENTO_MOVIMIENTO_REGISTRADO, detalleBitacora, RESULTADO_EXITO);
 
             return nuevoSaldo;
-        } catch (SQLException | IllegalStateException e) {
-            throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
+        } catch (IllegalArgumentException | AccesoDenegadoException e) {
+            // Dato inválido o sin permiso: el usuario ve el mensaje del campo o de acceso denegado
+            throw e;
+        } catch (SQLException | RuntimeException e) {
+            // 7. R9: cualquier otro error es técnico y el usuario solo ve M02
+            throw manejarErrorTecnico(nombreDeSesion(sesion), e);
         }
     }
 
     /**
-     * Cuentas → Consultar cuenta / Mi cuenta.
-     * <ul>
-     *   <li><b>Ejecutivo ({@code CUENTA_VER}):</b> indica la cédula de cualquier asociado (9 dígitos).</li>
-     *   <li><b>Asociado ({@code CUENTA_VER_PROPIA}):</b> consulta únicamente su propia cuenta vinculada.
-     *       Si se intenta especificar una cédula distinta a la del asociado de la sesión (ataque IDOR),
-     *       se rechaza con mensaje de acceso denegado sin revelar si el asociado existe y se registra
-     *       {@code ACCESO_DENEGADO} en la bitácora.</li>
-     * </ul>
+     * Cuentas → Consultar cuenta / Mi cuenta. Es una sola operación que cambia según el rol:
+     *   - Ejecutivo (CUENTA_VER): escribe la cédula de cualquier asociado.
+     *   - Asociado (CUENTA_VER_PROPIA): no escribe nada; se usa el asociado de su sesión.
+     *     Si alguien intenta pedir la cédula de otra persona, se responde "acceso denegado"
+     *     (sin decir si esa cédula existe) y se registra ACCESO_DENEGADO (R3 y R8).
+     *   - Cualquier otro rol: acceso denegado.
      */
     public Cuenta consultarCuenta(Usuario sesion, String cedulaSolicitada) {
-        if (sesion == null || sesion.getRol() == null) {
-            registrarBitacoraSeguro("(desconocido)", EVENTO_ACCESO_DENEGADO,
-                    "Sesión nula al consultar cuenta", RESULTADO_DENEGADO);
-            throw new AccesoDenegadoException("Acceso denegado: sesión inválida.");
-        }
+        try {
+            if (sesion == null || sesion.getRol() == null) {
+                registrarBitacoraSeguro("(desconocido)", EVENTO_ACCESO_DENEGADO,
+                        "Sesión nula al consultar cuenta", RESULTADO_DENEGADO);
+                throw new AccesoDenegadoException("Acceso denegado: sesión inválida.");
+            }
 
-        if (sesion.getRol() == Rol.EJECUTIVO) {
-            // 1. Verificar permiso CUENTA_VER (R3)
-            verificarPermisoConBitacora(sesion, Permiso.CUENTA_VER,
-                    "Consultar cuenta: cedula=" + valorSeguro(cedulaSolicitada));
+            if (sesion.getRol() == Rol.EJECUTIVO) {
+                // 1. Verificar permiso CUENTA_VER (R3)
+                verificarPermisoConBitacora(sesion, Permiso.CUENTA_VER,
+                        "Consultar cuenta: cedula=" + valorSeguro(cedulaSolicitada));
 
-            // 2. Validar cédula por lista blanca (R5)
-            String cedulaLimpia = validarCedula(cedulaSolicitada);
+                // 2. Validar cédula por lista blanca (R5)
+                String cedulaLimpia = Validaciones.validarCedula(cedulaSolicitada);
 
-            // 3. Consultar y descifrar saldo y movimientos (R6)
-            try {
+                // 3. R6: el saldo y los montos se descifran solo para mostrarlos
                 Cuenta cuenta = dao.buscarCuentaPorCedula(cedulaLimpia);
                 if (cuenta == null) {
                     throw new IllegalArgumentException("No se encontró ninguna cuenta para la cédula indicada.");
                 }
                 descifrarCuentaYMovimientos(cuenta);
                 return cuenta;
-            } catch (SQLException | IllegalStateException e) {
-                throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
-            }
 
-        } else if (sesion.getRol() == Rol.ASOCIADO) {
-            // 1. Verificar permiso CUENTA_VER_PROPIA (R3)
-            verificarPermisoConBitacora(sesion, Permiso.CUENTA_VER_PROPIA, "Consultar mi cuenta");
+            } else if (sesion.getRol() == Rol.ASOCIADO) {
+                // 1. Verificar permiso CUENTA_VER_PROPIA (R3)
+                verificarPermisoConBitacora(sesion, Permiso.CUENTA_VER_PROPIA, "Consultar mi cuenta");
 
-            if (sesion.getAsociadoId() == null) {
-                registrarBitacoraSeguro(sesion.getNombreUsuario(), EVENTO_ACCESO_DENEGADO,
-                        "Usuario asociado sin asociado_id vinculado", RESULTADO_DENEGADO);
-                throw new AccesoDenegadoException("Acceso denegado: no tiene una cuenta vinculada.");
-            }
+                if (sesion.getAsociadoId() == null) {
+                    registrarBitacoraSeguro(sesion.getNombreUsuario(), EVENTO_ACCESO_DENEGADO,
+                            "Usuario asociado sin asociado_id vinculado", RESULTADO_DENEGADO);
+                    throw new AccesoDenegadoException("Acceso denegado: no tiene una cuenta vinculada.");
+                }
+                // Se guarda como int para comparar números (con Integer se compararían objetos)
+                int asociadoIdSesion = sesion.getAsociadoId();
 
-            try {
-                Cuenta cuentaPropia = dao.buscarCuentaPorAsociadoId(sesion.getAsociadoId());
+                Cuenta cuentaPropia = dao.buscarCuentaPorAsociadoId(asociadoIdSesion);
                 if (cuentaPropia == null) {
                     throw new AccesoDenegadoException("Acceso denegado: no fue posible acceder a la cuenta.");
                 }
 
-                // Verificación estricta de pertenencia (prevención de IDOR - R3):
-                // Si la solicitud incluye una cédula y no coincide con la cédula propia del asociado de la sesión,
-                // o si el asociado_id de la cuenta no coincide con el de la sesión, se rechaza y audita.
-                if (cuentaPropia.getAsociadoId() != sesion.getAsociadoId()
+                // R3 (pertenencia): un asociado solo puede ver su propia cuenta.
+                // Se rechaza si la cuenta no es del asociado de la sesión, o si la solicitud
+                // trae una cédula distinta a la suya (alguien que modificó la petición).
+                if (cuentaPropia.getAsociadoId() != asociadoIdSesion
                         || (cedulaSolicitada != null && !cedulaSolicitada.isBlank()
                             && !cedulaSolicitada.trim().equals(cuentaPropia.getCedulaAsociado()))) {
                     registrarBitacoraSeguro(sesion.getNombreUsuario(), EVENTO_ACCESO_DENEGADO,
@@ -393,27 +394,29 @@ public class CoopevidaServicio {
 
                 descifrarCuentaYMovimientos(cuentaPropia);
                 return cuentaPropia;
-            } catch (SQLException | IllegalStateException e) {
-                throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
-            }
 
-        } else {
-            // Cualquier otro rol (por ejemplo, Administrador intentando ver cuentas)
-            registrarBitacoraSeguro(sesion.getNombreUsuario(), EVENTO_ACCESO_DENEGADO,
-                    "Operación CUENTA_VER no permitida para rol " + sesion.getRol().getNombre()
-                    + " (dato=" + valorSeguro(cedulaSolicitada) + ")",
-                    RESULTADO_DENEGADO);
-            throw new AccesoDenegadoException("Acceso denegado: su rol no tiene permiso para consultar cuentas.");
+            } else {
+                // Otro rol (por ejemplo, el Administrador): no puede ver cuentas
+                registrarBitacoraSeguro(sesion.getNombreUsuario(), EVENTO_ACCESO_DENEGADO,
+                        "Operación CUENTA_VER no permitida para rol " + sesion.getRol().getNombre()
+                        + " (dato=" + valorSeguro(cedulaSolicitada) + ")",
+                        RESULTADO_DENEGADO);
+                throw new AccesoDenegadoException("Acceso denegado: su rol no tiene permiso para consultar cuentas.");
+            }
+        } catch (IllegalArgumentException | AccesoDenegadoException e) {
+            throw e;
+        } catch (SQLException | RuntimeException e) {
+            // R9: error técnico (base de datos, dato cifrado alterado, etc.) → solo M02
+            throw manejarErrorTecnico(nombreDeSesion(sesion), e);
         }
     }
 
-    /**
-     * Método de conveniencia para la opción "Mi cuenta" del rol Asociado.
-     */
+    // Opción "Mi cuenta" del Asociado: no envía cédula, se usa la de su sesión
     public Cuenta consultarMiCuenta(Usuario sesion) {
         return consultarCuenta(sesion, null);
     }
 
+    // R6: descifra el saldo y el monto de cada movimiento para mostrarlos
     private void descifrarCuentaYMovimientos(Cuenta cuenta) throws SQLException {
         cuenta.setSaldo(Cripto.descifrar(cuenta.getSaldoCifrado()));
         List<Movimiento> movimientos = dao.listarMovimientosPorCuenta(cuenta.getId());
@@ -423,75 +426,65 @@ public class CoopevidaServicio {
         cuenta.setMovimientos(movimientos);
     }
 
-    /**
-     * Administración → Usuarios: Lista todos los usuarios registrados.
-     * Requiere el permiso {@code USUARIO_VER} (solo Administrador).
-     */
+    // Administración → Usuarios: lista de usuarios (permiso USUARIO_VER, solo Administrador)
     public List<Usuario> listarUsuarios(Usuario sesion) {
-        verificarPermisoConBitacora(sesion, Permiso.USUARIO_VER, "Listar usuarios");
         try {
+            verificarPermisoConBitacora(sesion, Permiso.USUARIO_VER, "Listar usuarios");
             return dao.listarUsuarios();
-        } catch (SQLException e) {
-            throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
+        } catch (IllegalArgumentException | AccesoDenegadoException e) {
+            throw e;
+        } catch (SQLException | RuntimeException e) {
+            // R9: cualquier otro error es técnico y el usuario solo ve M02
+            throw manejarErrorTecnico(nombreDeSesion(sesion), e);
         }
     }
 
-    /**
-     * Administración → Usuarios: Lista cédula y nombre de asociados que aún no tienen usuario.
-     * Requiere el permiso {@code ASOCIADO_VINCULAR} (solo Administrador).
-     */
+    // Administración → Usuarios: asociados que aún no tienen usuario, solo cédula y nombre
+    // (permiso ASOCIADO_VINCULAR). El Administrador no ve saldos ni otros datos.
     public List<Asociado> listarAsociadosSinUsuario(Usuario sesion) {
-        verificarPermisoConBitacora(sesion, Permiso.ASOCIADO_VINCULAR, "Listar asociados sin usuario");
         try {
+            verificarPermisoConBitacora(sesion, Permiso.ASOCIADO_VINCULAR, "Listar asociados sin usuario");
             return dao.listarAsociadosSinUsuario();
-        } catch (SQLException e) {
-            throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
+        } catch (IllegalArgumentException | AccesoDenegadoException e) {
+            throw e;
+        } catch (SQLException | RuntimeException e) {
+            // R9: cualquier otro error es técnico y el usuario solo ve M02
+            throw manejarErrorTecnico(nombreDeSesion(sesion), e);
         }
     }
 
     /**
-     * Administración → Usuarios: Crea un nuevo usuario y genera su contraseña inicial aleatoria
-     * de 14 caracteres con {@link SecureRandom}.
-     * <p>
-     * Requiere el permiso {@code USUARIO_CREAR} (y {@code ASOCIADO_VINCULAR} si el rol es Asociado).
-     * Registra {@code USUARIO_CREADO} en la bitácora (nunca la contraseña).
-     *
-     * @return La contraseña inicial generada en claro para mostrarla una única vez al administrador.
+     * Administración → Usuarios: crear usuario (permiso USUARIO_CREAR, y ASOCIADO_VINCULAR
+     * si el rol es Asociado). Genera una contraseña inicial aleatoria de 14 caracteres,
+     * guarda solo su hash y la devuelve para mostrarla una única vez.
+     * En la bitácora queda USUARIO_CREADO con el nombre, nunca con la contraseña.
      */
     public String crearUsuario(Usuario sesion, String nombreUsuario, String rolNombre, Integer asociadoId) {
-        // 1. Verificar permiso USUARIO_CREAR (R3)
-        verificarPermisoConBitacora(sesion, Permiso.USUARIO_CREAR,
-                "Crear usuario: " + valorSeguro(nombreUsuario));
-
-        // 2. Validar entradas por lista blanca (R5)
-        if (nombreUsuario == null || nombreUsuario.trim().isEmpty()) {
-            throw new IllegalArgumentException("El campo 'Nombre de usuario' es obligatorio.");
-        }
-        String usuarioLimpio = nombreUsuario.trim();
-        if (!PATRON_USUARIO.matcher(usuarioLimpio).matches()) {
-            throw new IllegalArgumentException(
-                    "El campo 'Nombre de usuario' debe tener de 4 a 20 caracteres y contener solo "
-                    + "letras minúsculas, números, punto (.) o guion bajo (_).");
-        }
-
-        Rol rolNuevo = Rol.desdeNombre(rolNombre);
-
-        if (rolNuevo == Rol.ASOCIADO) {
-            verificarPermisoConBitacora(sesion, Permiso.ASOCIADO_VINCULAR,
-                    "Vincular asociado id=" + asociadoId);
-            if (asociadoId == null || asociadoId <= 0) {
-                throw new IllegalArgumentException(
-                        "El campo 'Asociado vinculado' es obligatorio cuando el rol es Asociado.");
-            }
-        } else {
-            if (asociadoId != null) {
-                throw new IllegalArgumentException(
-                        "El campo 'Asociado vinculado' solo aplica cuando el rol es Asociado.");
-            }
-        }
-
-        // 3. Reglas del negocio, hash PBKDF2 (R1), inserción y bitácora (R8)
         try {
+            // 1. Verificar permiso USUARIO_CREAR (R3)
+            verificarPermisoConBitacora(sesion, Permiso.USUARIO_CREAR,
+                    "Crear usuario: " + valorSeguro(nombreUsuario));
+
+            // 2. Validar entradas por lista blanca (R5)
+            String usuarioLimpio = Validaciones.validarNombreUsuario(nombreUsuario);
+
+            Rol rolNuevo = Rol.desdeNombre(rolNombre);
+
+            if (rolNuevo == Rol.ASOCIADO) {
+                verificarPermisoConBitacora(sesion, Permiso.ASOCIADO_VINCULAR,
+                        "Vincular asociado id=" + asociadoId);
+                if (asociadoId == null || asociadoId <= 0) {
+                    throw new IllegalArgumentException(
+                            "El campo 'Asociado vinculado' es obligatorio cuando el rol es Asociado.");
+                }
+            } else {
+                if (asociadoId != null) {
+                    throw new IllegalArgumentException(
+                            "El campo 'Asociado vinculado' solo aplica cuando el rol es Asociado.");
+                }
+            }
+
+            // 3. Reglas del negocio: el nombre no se repite y el asociado no tiene ya un usuario
             if (dao.existeNombreUsuario(usuarioLimpio)) {
                 throw new IllegalArgumentException("El 'Nombre de usuario' indicado ya existe.");
             }
@@ -499,6 +492,7 @@ public class CoopevidaServicio {
                 throw new IllegalArgumentException("El 'Asociado vinculado' no existe o ya tiene un usuario asignado.");
             }
 
+            // 4. R1: se guarda solo el hash de la contraseña inicial, nunca el texto
             String contrasenaInicial = Cripto.generarContrasenaInicial();
             char[] charsClave = contrasenaInicial.toCharArray();
             String hash;
@@ -514,15 +508,16 @@ public class CoopevidaServicio {
                     "usuario=" + usuarioLimpio + ", rol=" + rolNuevo.getNombre(), RESULTADO_EXITO);
 
             return contrasenaInicial;
-        } catch (SQLException e) {
-            throw manejarErrorTecnico(sesion.getNombreUsuario(), e);
+        } catch (IllegalArgumentException | AccesoDenegadoException e) {
+            throw e;
+        } catch (SQLException | RuntimeException e) {
+            // R9: cualquier otro error es técnico y el usuario solo ve M02
+            throw manejarErrorTecnico(nombreDeSesion(sesion), e);
         }
     }
 
-    /**
-     * Verifica el permiso en {@link ControlAcceso}; si es rechazado, registra
-     * {@code ACCESO_DENEGADO} en la bitácora y propaga {@link AccesoDenegadoException}.
-     */
+    // R3 y R8: revisa el permiso con ControlAcceso. Si se niega, deja ACCESO_DENEGADO
+    // en la bitácora y detiene la operación.
     private void verificarPermisoConBitacora(Usuario sesion, Permiso permiso, String detalleAccion) {
         try {
             ControlAcceso.verificarPermiso(sesion, permiso);
@@ -537,68 +532,11 @@ public class CoopevidaServicio {
         }
     }
 
-    private String validarCedula(String cedula) {
-        if (cedula == null || cedula.isEmpty()) {
-            throw new IllegalArgumentException("El campo 'Cédula' es obligatorio.");
-        }
-        if (!PATRON_CEDULA.matcher(cedula).matches()) {
-            throw new IllegalArgumentException(
-                    "El campo 'Cédula' debe contener exactamente 9 dígitos numéricos, sin guiones ni espacios.");
-        }
-        return cedula;
-    }
-
-    private String validarTipoMovimiento(String tipo) {
-        if (tipo == null || tipo.trim().isEmpty()) {
-            throw new IllegalArgumentException("El campo 'Tipo' es obligatorio.");
-        }
-        String t = tipo.trim().toLowerCase();
-        if (t.equals("depósito") || t.equals("deposito")) {
-            return "deposito";
-        }
-        if (t.equals("retiro")) {
-            return "retiro";
-        }
-        throw new IllegalArgumentException("El campo 'Tipo' debe ser Depósito o Retiro.");
-    }
-
-    private BigDecimal validarMonto(String montoTexto) {
-        if (montoTexto == null || montoTexto.trim().isEmpty()) {
-            throw new IllegalArgumentException("El campo 'Monto' es obligatorio.");
-        }
-        String limpio = montoTexto.trim();
-        if (!PATRON_MONTO.matcher(limpio).matches()) {
-            throw new IllegalArgumentException(
-                    "El campo 'Monto' debe ser un número positivo con un máximo de 2 decimales.");
-        }
-        BigDecimal monto = new BigDecimal(limpio);
-        if (monto.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("El campo 'Monto' debe ser mayor que 0.");
-        }
-        return monto;
-    }
-
-    private String validarReferencia(String referencia) {
-        if (referencia == null || referencia.trim().isEmpty()) {
-            throw new IllegalArgumentException("El campo 'Referencia' es obligatorio.");
-        }
-        String limpia = referencia.trim();
-        if (!PATRON_REFERENCIA.matcher(limpia).matches()) {
-            throw new IllegalArgumentException(
-                    "El campo 'Referencia' debe tener hasta 20 caracteres (solo letras, números y guion).");
-        }
-        return limpia;
-    }
-
     /**
-     * Manejo seguro de errores técnicos (R9):
-     * <ul>
-     *   <li>Genera un código de referencia hexadecimal de 4 caracteres (ej. {@code A3F9}).</li>
-     *   <li>Imprime la traza técnica completa únicamente en {@code System.err}.</li>
-     *   <li>Registra {@code ERROR_SISTEMA} en la bitácora con el código y el tipo de excepción
-     *       (sin mensaje ni traza).</li>
-     *   <li>Devuelve {@link IllegalStateException} con el mensaje fijo M02.</li>
-     * </ul>
+     * R9: cuando algo falla por un error técnico, el usuario solo ve el mensaje M02 con un
+     * código de referencia (por ejemplo A3F9). El detalle del error se imprime en la terminal
+     * con ese mismo código, nunca en la ventana, para no darle pistas a un atacante.
+     * En la bitácora queda ERROR_SISTEMA solo con el código y el tipo de error.
      */
     private IllegalStateException manejarErrorTecnico(String usuarioNombre, Exception error) {
         String codigoRef = String.format("%04X", SECURE_RANDOM.nextInt(0x10000));
@@ -619,24 +557,58 @@ public class CoopevidaServicio {
         return new IllegalStateException(String.format(PLANTILLA_M02, codigoRef));
     }
 
+    /**
+     * R8: agrega un registro a la bitácora (la aplicación solo puede insertar, nunca leer,
+     * modificar ni borrar).
+     *   - Se quitan los saltos de línea del usuario y del detalle. Si no, alguien podría
+     *     escribir un "usuario" con saltos de línea y fingir registros falsos.
+     *   - Los textos se recortan al tamaño de la columna; así un usuario muy largo no hace
+     *     fallar el registro y el intento fallido siempre queda guardado (R2).
+     *   - Si la bitácora falla, la operación sigue y el aviso sale en la terminal.
+     * El detalle nunca lleva contraseñas, claves, montos ni saldos: solo identificadores.
+     */
     private void registrarBitacoraSeguro(String usuarioNombre, String evento, String detalle, String resultado) {
         try {
-            String detalleCorto = (detalle != null && detalle.length() > 250)
-                    ? detalle.substring(0, 250)
-                    : detalle;
-            dao.insertarBitacora(usuarioNombre, evento, detalleCorto, resultado);
-        } catch (SQLException ex) {
+            String usuarioLimpio = quitarCaracteresControl(usuarioNombre);
+            if (usuarioLimpio.isEmpty()) {
+                usuarioLimpio = "(vacío)";
+            }
+            usuarioLimpio = recortar(usuarioLimpio, LONGITUD_MAXIMA_USUARIO_BITACORA);
+            String detalleLimpio = recortar(quitarCaracteresControl(detalle), LONGITUD_MAXIMA_DETALLE_BITACORA);
+
+            dao.insertarBitacora(usuarioLimpio, evento, detalleLimpio, resultado);
+        } catch (SQLException | RuntimeException ex) {
             System.err.println("[ADVERTENCIA BITÁCORA] No fue posible escribir en la bitácora: "
                     + ex.getClass().getSimpleName());
             ex.printStackTrace(System.err);
         }
     }
 
+    // Cambia por espacios los saltos de línea, tabuladores y otros caracteres invisibles
+    private String quitarCaracteresControl(String valor) {
+        if (valor == null) {
+            return "";
+        }
+        return valor.replaceAll("\\p{Cntrl}", " ").trim();
+    }
+
+    private String recortar(String valor, int longitudMaxima) {
+        return valor.length() > longitudMaxima ? valor.substring(0, longitudMaxima) : valor;
+    }
+
+    // Limpia un dato escrito por el usuario antes de ponerlo en la bitácora (máximo 40 caracteres)
     private String valorSeguro(String valor) {
         if (valor == null) {
             return "(nulo)";
         }
-        String limpio = valor.replaceAll("[\\r\\n]", " ").trim();
+        String limpio = quitarCaracteresControl(valor);
         return limpio.length() > 40 ? limpio.substring(0, 40) + "..." : limpio;
+    }
+
+    // Nombre del usuario de la sesión para la bitácora ("(desconocido)" si no hay sesión)
+    private String nombreDeSesion(Usuario sesion) {
+        return (sesion != null && sesion.getNombreUsuario() != null)
+                ? sesion.getNombreUsuario()
+                : "(desconocido)";
     }
 }

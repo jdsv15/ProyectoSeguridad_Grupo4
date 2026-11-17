@@ -6,28 +6,23 @@ import modelo.Usuario;
 import servicio.CoopevidaServicio;
 
 /**
- * Ventana de inicio de sesión del sistema COOPEVIDA (capa de interfaz {@code app}).
- * <p>
- * Compatible con el diseñador visual (Matisse / pestaña Design) de NetBeans.
- * No contiene lógica de negocio ni consultas SQL: delega la autenticación a
- * {@link CoopevidaServicio} y deshabilita los controles durante 15 segundos
- * cuando se alcanzan 5 intentos fallidos consecutivos (R2).
+ * Ventana de inicio de sesión (capa de interfaz). Se diseña con la pestaña Design de NetBeans.
+ * La contraseña se escribe en un JPasswordField, así no se ve en pantalla.
+ * La revisión del usuario y la contraseña la hace CoopevidaServicio; esta ventana solo
+ * muestra el resultado y desactiva los campos durante el bloqueo de 15 segundos (R2).
  */
 public class LoginFrame extends javax.swing.JFrame {
 
     private final CoopevidaServicio servicio;
     private Timer timerBloqueo;
 
-    /**
-     * Crea la ventana de inicio de sesión con una nueva instancia del servicio.
-     */
+    // Abre el login con un servicio nuevo (al iniciar la aplicación)
     public LoginFrame() {
         this(new CoopevidaServicio());
     }
 
-    /**
-     * Crea la ventana de inicio de sesión reutilizando el servicio indicado.
-     */
+    // Abre el login con el mismo servicio (al cerrar sesión), para que el contador de
+    // intentos fallidos no se reinicie con solo volver a esta ventana
     public LoginFrame(CoopevidaServicio servicio) {
         this.servicio = servicio;
         initComponents();
@@ -36,10 +31,8 @@ public class LoginFrame extends javax.swing.JFrame {
         verificarEstadoBloqueoUI();
     }
 
-    /**
-     * Verifica si el servicio reporta un bloqueo activo tras 5 intentos fallidos
-     * y deshabilita los campos en la interfaz gráfica durante los 15 segundos (R2).
-     */
+    // R2: si el servicio dice que hay bloqueo, se desactivan los campos y cada medio
+    // segundo se actualiza la cuenta regresiva hasta que se puedan volver a usar.
     private void verificarEstadoBloqueoUI() {
         if (!servicio.estaInicioBloqueado()) {
             return;

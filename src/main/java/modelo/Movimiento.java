@@ -4,12 +4,9 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * Representa un movimiento financiero (depósito o retiro) asociado a una cuenta.
- * <p>
- * Cumple la separación de capas: la capa DAO únicamente manipula el arreglo de
- * bytes cifrado ({@code montoCifrado}) sin conocer nunca el valor en claro, y la
- * capa de servicios lo descifra a {@code monto} únicamente cuando debe mostrarse
- * a un usuario autorizado.
+ * Un depósito o retiro de una cuenta.
+ * El DAO solo llena montoCifrado (los bytes guardados en la base). El servicio llena
+ * monto (el valor en claro) únicamente cuando hay que mostrarlo (R6).
  */
 public class Movimiento {
 

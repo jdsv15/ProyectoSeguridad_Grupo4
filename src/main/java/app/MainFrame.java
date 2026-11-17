@@ -15,16 +15,15 @@ import seguridad.AccesoDenegadoException;
 import servicio.CoopevidaServicio;
 
 /**
- * Ventana principal del sistema COOPEVIDA (capa de interfaz {@code app}).
- * <p>
- * Compatible con el diseñador visual (pestaña Design / Matisse) de NetBeans.
- * Muestra el nombre de usuario y su rol, presenta únicamente las opciones que el
- * rol puede utilizar, controla la expiración de sesión tras 2 minutos de
- * inactividad (R9) y delega todas las operaciones a {@link CoopevidaServicio}.
+ * Menú principal (capa de interfaz). Se diseña con la pestaña Design de NetBeans.
+ * Muestra el usuario y su rol, y solo las pestañas que ese rol puede usar.
+ * No decide permisos, no valida reglas y no toca la base de datos: todo lo pide a
+ * CoopevidaServicio y solo muestra el resultado o el mensaje.
  */
 public class MainFrame extends javax.swing.JFrame {
 
-    private static final long TIEMPO_MAX_INACTIVIDAD_MS = 2 * 60 * 1000L; // 2 minutos (R9)
+    // R9: la sesión expira tras 2 minutos sin actividad
+    private static final long TIEMPO_MAX_INACTIVIDAD_MS = 2 * 60 * 1000L;
     private static final DateTimeFormatter FORMATO_FECHA = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final CoopevidaServicio servicio;
@@ -32,15 +31,19 @@ public class MainFrame extends javax.swing.JFrame {
     private long ultimaActividadMs;
 
     /**
-     * Constructor por defecto para previsualización en el diseñador de NetBeans.
+     * Constructor vacío, solo para el diseñador de NetBeans.
+     * No crea ninguna sesión: si alguien abre esta ventana sin iniciar sesión,
+     * cualquier botón lo devuelve al login (ante la duda, se niega el acceso).
      */
     public MainFrame() {
-        this(new CoopevidaServicio(), new Usuario(0, "demo", Rol.ADMINISTRADOR, null));
+        this.servicio = null;
+        this.usuarioSesion = null;
+        initComponents();
+        setLocationRelativeTo(null);
+        lblUsuarioRol.setText("Sin sesión activa");
     }
 
-    /**
-     * Crea la ventana principal para el usuario autenticado.
-     */
+    // Abre el menú para el usuario que acaba de iniciar sesión
     public MainFrame(CoopevidaServicio servicio, Usuario usuarioSesion) {
         this.servicio = servicio;
         this.usuarioSesion = usuarioSesion;
@@ -51,9 +54,8 @@ public class MainFrame extends javax.swing.JFrame {
     }
 
     /**
-     * Verifica la inactividad de la sesión al recibir la siguiente acción (R9).
-     * Si transcurrieron más de 2 minutos desde la acción anterior, rechaza la acción,
-     * borra los datos de la sesión y regresa al inicio de sesión.
+     * R9: se llama al inicio de cada botón. Si pasaron más de 2 minutos desde la acción
+     * anterior, la acción no se hace, se borran los datos de la sesión y se vuelve al login.
      */
     private boolean verificarActividadSesion() {
         if (usuarioSesion == null) {
@@ -75,15 +77,15 @@ public class MainFrame extends javax.swing.JFrame {
 
     private void volverAlLogin() {
         usuarioSesion = null;
-        LoginFrame login = new LoginFrame(servicio);
+        // Si la ventana se abrió sin servicio (constructor del diseñador), se crea uno nuevo
+        LoginFrame login = (servicio != null) ? new LoginFrame(servicio) : new LoginFrame();
         login.setVisible(true);
         this.dispose();
     }
 
     /**
-     * Configura las pestañas visibles del menú principal según el rol del usuario autenticado.
-     * Ocultar opciones en la interfaz es solo comodidad; cada operación se vuelve a verificar
-     * en {@link CoopevidaServicio} (R3).
+     * Quita las pestañas que el rol no puede usar. Esto es solo comodidad para el usuario:
+     * la seguridad real está en el servicio, que vuelve a revisar el permiso (R3).
      */
     private void configurarSegunRol() {
         lblUsuarioRol.setText("Usuario: " + usuarioSesion.getNombreUsuario()

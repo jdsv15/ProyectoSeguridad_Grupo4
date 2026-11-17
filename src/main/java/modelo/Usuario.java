@@ -1,17 +1,13 @@
 package modelo;
 
 /**
- * Representa al usuario autenticado en el sistema COOPEVIDA o un elemento de la
- * lista de usuarios consultada por el administrador.
- * <p>
- * No almacena el hash de la contraseña en el objeto de sesión para evitar
- * exponer material sensible en memoria durante la sesión activa.
+ * El usuario que inició sesión (la interfaz lo envía en cada llamada al servicio),
+ * o una fila de la lista de usuarios que ve el Administrador.
+ * No guarda el hash de la contraseña: después del login ya no se necesita.
  */
 public class Usuario {
 
-    /**
-     * Roles fijos definidos por el modelo de negocio y seguridad (R3).
-     */
+    // R3: los tres roles del enunciado, con el mismo id que en la tabla rol
     public enum Rol {
         ADMINISTRADOR(1, "Administrador"),
         EJECUTIVO(2, "Ejecutivo"),
@@ -33,21 +29,19 @@ public class Usuario {
             return nombre;
         }
 
-        /**
-         * Convierte el identificador numérico de la base de datos en su Rol.
-         */
+        // Convierte el rol_id de la base de datos en un Rol
         public static Rol desdeId(int id) {
             for (Rol r : values()) {
                 if (r.id == id) {
                     return r;
                 }
             }
-            throw new IllegalArgumentException("Identificador de rol inválido: " + id);
+            // El id viene de la base de datos, no de lo que escribe el usuario: si es inválido es
+            // un error técnico, y el servicio mostrará M02 sin dar detalles (R9).
+            throw new IllegalStateException("Identificador de rol inválido: " + id);
         }
 
-        /**
-         * Convierte el nombre textual del rol en su enumeración correspondiente.
-         */
+        // Convierte el nombre elegido en pantalla ("Ejecutivo", etc.) en un Rol
         public static Rol desdeNombre(String nombre) {
             if (nombre == null) {
                 throw new IllegalArgumentException("El rol es obligatorio.");

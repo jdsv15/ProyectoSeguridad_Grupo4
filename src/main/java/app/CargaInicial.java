@@ -7,19 +7,14 @@ import java.sql.SQLException;
 import seguridad.Cripto;
 
 /**
- * Programa de carga inicial de datos de prueba para COOPEVIDA.
- * <p>
- * Inserta los 6 usuarios de prueba (con sus contraseñas protegidas mediante PBKDF2 - R1),
- * las 5 cuentas de ahorro (con sus saldos cifrados con AES-GCM - R6) y los 10 movimientos
- * históricos (con sus montos cifrados con AES-GCM - R6) definidos en {@code coopevida_base.sql}.
+ * Programa aparte que carga los datos de prueba del final de coopevida_base.sql.
+ * Se ejecuta a mano una sola vez (clic derecho → Run File).
+ * Hace falta porque el SQL no puede calcular hashes ni cifrar: aquí las contraseñas
+ * se guardan con PBKDF2 (R1) y los saldos y montos cifrados con AES-GCM (R6).
  */
 public class CargaInicial {
 
-    /**
-     * Ejecuta la carga inicial dentro de una transacción si la tabla {@code usuario} está vacía.
-     *
-     * @return {@code true} si se insertaron los datos; {@code false} si ya estaban cargados.
-     */
+    // Inserta todo en una transacción. Si ya hay usuarios, no hace nada y devuelve false.
     public static boolean ejecutarCargaInicial() throws SQLException {
         CoopevidaDAO dao = new CoopevidaDAO();
         if (dao.contarUsuarios() > 0) {
@@ -29,7 +24,7 @@ public class CargaInicial {
         try (Connection conn = dao.obtenerConexion()) {
             conn.setAutoCommit(false);
             try {
-                // 1. Insertar los 6 usuarios de prueba con hash PBKDF2 (600 000 iteraciones y sal única)
+                // 1. Los 6 usuarios de prueba: se guarda el hash de cada contraseña (R1)
                 insertarUsuario(dao, conn, 1, "admin1", "Admin1-Coop#2026", 1, null);
                 insertarUsuario(dao, conn, 2, "ejecutivo1", "Ejec1-Coop#2026", 2, null);
                 insertarUsuario(dao, conn, 3, "ejecutivo2", "Ejec2-Coop#2026", 2, null);
@@ -37,14 +32,14 @@ public class CargaInicial {
                 insertarUsuario(dao, conn, 5, "asociado2", "Asoc2-Coop#2026", 3, 2);
                 insertarUsuario(dao, conn, 6, "asociado3", "Asoc3-Coop#2026", 3, 3);
 
-                // 2. Insertar las 5 cuentas con sus saldos cifrados mediante AES-GCM (IV único de 12 bytes)
+                // 2. Las 5 cuentas, con el saldo cifrado (R6)
                 insertarCuenta(dao, conn, 1, 1, "650000.00");
                 insertarCuenta(dao, conn, 2, 2, "700000.00");
                 insertarCuenta(dao, conn, 3, 3, "100000.00");
                 insertarCuenta(dao, conn, 4, 4, "0.00");
                 insertarCuenta(dao, conn, 5, 5, "0.00");
 
-                // 3. Insertar los 10 movimientos con montos cifrados mediante AES-GCM (IV único de 12 bytes)
+                // 3. Los 10 movimientos, con el monto cifrado (R6)
                 insertarMovimiento(dao, conn, 1L, 1, "deposito", "500000.00", "DEP-0001", "2026-10-05 09:15:00", 2);
                 insertarMovimiento(dao, conn, 2L, 1, "deposito", "250000.00", "DEP-0002", "2026-10-12 10:40:00", 2);
                 insertarMovimiento(dao, conn, 3L, 1, "retiro", "100000.00", "RET-0001", "2026-10-19 14:05:00", 3);

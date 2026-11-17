@@ -16,8 +16,17 @@
         <exec.mainClass>app.Main</exec.mainClass>
     </properties>
 
+    <!-- El driver JDBC viene dentro del proyecto, en la carpeta lib/ (lo pide el enunciado).
+         Maven lo toma de ahí, así que no hace falta descargarlo de internet. -->
+    <repositories>
+        <repository>
+            <id>lib-del-proyecto</id>
+            <url>file://${project.basedir}/lib</url>
+        </repository>
+    </repositories>
+
     <dependencies>
-        <!-- Única librería externa permitida: MariaDB Connector/J -->
+        <!-- Única librería externa permitida: MariaDB Connector/J (está en lib/) -->
         <dependency>
             <groupId>org.mariadb.jdbc</groupId>
             <artifactId>mariadb-java-client</artifactId>

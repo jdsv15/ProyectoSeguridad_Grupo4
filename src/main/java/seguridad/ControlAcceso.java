@@ -9,44 +9,33 @@ import modelo.Usuario;
 import modelo.Usuario.Rol;
 
 /**
- * Implementa el control de acceso basado en roles (RBAC - Requisito R3).
- * <p>
- * Define en un único lugar del código el catálogo de permisos ({@link Permiso})
- * y la matriz inmutable de permisos por rol. Toda operación en la capa de
- * servicios invoca {@link #verificarPermiso(Usuario, Permiso)} antes de
- * procesar cualquier solicitud.
+ * R3: control de acceso por roles.
+ *
+ * Aquí, y solo aquí, se define qué puede hacer cada rol (la matriz de permisos del
+ * enunciado). Cada operación de CoopevidaServicio llama a verificarPermiso antes de
+ * hacer cualquier cosa. Ocultar un botón en la ventana no basta, porque la interfaz
+ * se puede saltar; esta revisión en el servicio es la que realmente protege.
  */
 public final class ControlAcceso {
 
-    /**
-     * Códigos oficiales de operación definidos en el enunciado (R3).
-     */
+    // Códigos de operación del enunciado
     public enum Permiso {
-        /** Cambiar la propia contraseña (todos los roles). */
-        SESION_CAMBIAR_CLAVE,
-        /** Listar usuarios (solo Administrador). */
-        USUARIO_VER,
-        /** Crear usuario (solo Administrador). */
-        USUARIO_CREAR,
-        /** Ver cédula y nombre de asociados sin usuario, solo para vincular (solo Administrador). */
-        ASOCIADO_VINCULAR,
-        /** Registrar depósito o retiro (solo Ejecutivo). */
-        MOVIMIENTO_REGISTRAR,
-        /** Ver la cuenta y los movimientos de cualquier asociado (solo Ejecutivo). */
-        CUENTA_VER,
-        /** Ver la propia cuenta y sus movimientos (solo Asociado). */
-        CUENTA_VER_PROPIA
+        SESION_CAMBIAR_CLAVE,   // Cambiar la propia contraseña (todos los roles)
+        USUARIO_VER,            // Listar usuarios (Administrador)
+        USUARIO_CREAR,          // Crear usuario (Administrador)
+        ASOCIADO_VINCULAR,      // Ver cédula y nombre de asociados sin usuario (Administrador)
+        MOVIMIENTO_REGISTRAR,   // Registrar depósito o retiro (Ejecutivo)
+        CUENTA_VER,             // Ver la cuenta de cualquier asociado (Ejecutivo)
+        CUENTA_VER_PROPIA       // Ver solo la propia cuenta (Asociado)
     }
 
-    /**
-     * Matriz fija e inmutable de permisos (Rol x Operación).
-     */
+    // Matriz rol -> permisos. Se arma una sola vez y no se puede cambiar mientras
+    // la aplicación corre (por eso se guarda como "unmodifiable").
     private static final Map<Rol, Set<Permiso>> MATRIZ_PERMISOS;
 
     static {
         EnumMap<Rol, Set<Permiso>> mapa = new EnumMap<>(Rol.class);
 
-        // Administrador: cambiar clave, ver usuarios, crear usuario y vincular asociado
         mapa.put(Rol.ADMINISTRADOR, Collections.unmodifiableSet(EnumSet.of(
                 Permiso.SESION_CAMBIAR_CLAVE,
                 Permiso.USUARIO_VER,
@@ -54,14 +43,12 @@ public final class ControlAcceso {
                 Permiso.ASOCIADO_VINCULAR
         )));
 
-        // Ejecutivo: cambiar clave, registrar movimientos y ver cuenta de cualquier asociado
         mapa.put(Rol.EJECUTIVO, Collections.unmodifiableSet(EnumSet.of(
                 Permiso.SESION_CAMBIAR_CLAVE,
                 Permiso.MOVIMIENTO_REGISTRAR,
                 Permiso.CUENTA_VER
         )));
 
-        // Asociado: cambiar clave y ver únicamente su propia cuenta
         mapa.put(Rol.ASOCIADO, Collections.unmodifiableSet(EnumSet.of(
                 Permiso.SESION_CAMBIAR_CLAVE,
                 Permiso.CUENTA_VER_PROPIA
@@ -71,12 +58,10 @@ public final class ControlAcceso {
     }
 
     private ControlAcceso() {
-        // Clase utilitaria no instanciable
+        // Solo tiene métodos estáticos
     }
 
-    /**
-     * Consulta si un rol posee el permiso indicado según la matriz fija.
-     */
+    // Dice si el rol tiene el permiso según la matriz
     public static boolean tienePermiso(Rol rol, Permiso permiso) {
         if (rol == null || permiso == null) {
             return false;
@@ -86,12 +71,8 @@ public final class ControlAcceso {
     }
 
     /**
-     * Verifica que el usuario autenticado tenga el permiso requerido.
-     * Si no lo tiene, lanza {@link AccesoDenegadoException} (fallo seguro).
-     *
-     * @param usuario Usuario de la sesión activa.
-     * @param permiso Permiso requerido por la operación.
-     * @throws AccesoDenegadoException Si el usuario es nulo o su rol no tiene el permiso.
+     * R3: si no hay sesión o el rol no tiene el permiso, se lanza AccesoDenegadoException
+     * y la operación no se ejecuta. Ante la duda, se niega (fallo seguro).
      */
     public static void verificarPermiso(Usuario usuario, Permiso permiso) {
         if (usuario == null || usuario.getRol() == null || !tienePermiso(usuario.getRol(), permiso)) {

@@ -6,11 +6,9 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Representa la cuenta de ahorro de un asociado y su lista de movimientos.
- * <p>
- * El DAO carga únicamente {@code saldoCifrado} (VARBINARY con AES-GCM) sin
- * conocer el saldo en claro. La capa de servicios descifra el saldo a {@code saldo}
- * cuando se requiere validar un retiro o presentar los datos al usuario.
+ * La cuenta de ahorro de un asociado, con sus movimientos.
+ * El DAO solo llena saldoCifrado (los bytes guardados en la base). El servicio llena
+ * saldo (el valor en claro) cuando debe revisar un retiro o mostrar la cuenta (R6).
  */
 public class Cuenta {
 
