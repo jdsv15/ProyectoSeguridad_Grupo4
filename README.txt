@@ -59,6 +59,17 @@ Paso 5: Ejecutar la aplicación:
         Ejecute el proyecto en NetBeans (`Run Project` / F6), lo cual inicia `app.Main`
         y abre la ventana `LoginFrame`.
 
+Paso 6 (opcional): Pruebas de ataque contra la capa de servicios:
+        Las ventanas ocultan las opciones de otros roles, así que estos ataques no se
+        pueden intentar desde la interfaz. El programa `pruebas.PruebaAtaques`
+        (src/test/java, clic derecho -> `Run File`) inicia sesión con los usuarios de
+        prueba y llama directamente al servicio, como un atacante que modifica el cliente:
+        cuenta de otro asociado, operaciones de otro rol, montos negativos o en cero,
+        retiro mayor que el saldo e inyección SQL en cédula, referencia y nombre de usuario.
+        Todos deben salir "BLOQUEADO"; los rechazados por permiso quedan además como
+        ACCESO_DENEGADO en la bitácora.
+        No modifica datos; solo agrega registros a la bitácora.
+
 5. USUARIOS DE PRUEBA POR ROL Y CONTRASEÑAS
 -------------------------------------------
 Administrador:
