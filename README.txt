@@ -13,9 +13,9 @@ GRUPO DE TRABAJO: 04
 
 2. VERSIONES UTILIZADAS
 -----------------------
-- JDK: Java 17 LTS (o superior)
-- IDE: Apache NetBeans 17 o superior (probado en Apache NetBeans 31, proyecto Maven)
-- Base de datos: MariaDB 10.4 o superior
+- JDK: OpenJDK 17.0.20 LTS (Microsoft Build of OpenJDK). Requiere Java 17 o superior.
+- IDE: Apache NetBeans 31, proyecto Maven. Requiere NetBeans 17 o superior.
+- Base de datos: MariaDB 11.4.13. Requiere MariaDB 10.4 o superior.
 - Driver JDBC: MariaDB Connector/J 3.3.3, incluido en la carpeta lib/ del proyecto
   (lib/org/mariadb/jdbc/mariadb-java-client/3.3.3/). El pom.xml lo toma de ahí,
   así que no se necesita descargarlo.
@@ -39,7 +39,10 @@ NO se encuentran en el código fuente:
 -----------------------------------
 Paso 1: Crear la base de datos y el usuario de mínimo privilegio:
         Ejecute el script base en MariaDB con un usuario administrador (root):
-          mariadb -u root -p < coopevida_base.sql
+          mariadb -u root -p < coopevida_base.sql      (desde cmd)
+        o, dentro del cliente mariadb (también sirve desde PowerShell):
+          SOURCE ruta/del/proyecto/coopevida_base.sql;
+        El script borra y vuelve a crear la base, así que también sirve para reiniciarla.
 
 Paso 2: Configurar `config.properties`:
         Asegúrese de que el archivo `config.properties` exista en la raíz del proyecto
